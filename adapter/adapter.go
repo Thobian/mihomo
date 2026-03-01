@@ -273,7 +273,7 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		}
 	}
 
-	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
+	satisfied = expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode))
 	if !satisfied {
 		log.Errorln("%s resp.StatusCode is %d, not expected status %v", p.Name(), resp.StatusCode, expectedStatus)
 		return
