@@ -3,17 +3,15 @@ package gun
 import (
 	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/buf"
 	N "github.com/metacubex/mihomo/common/net"
-	C "github.com/metacubex/mihomo/constant"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"github.com/metacubex/http"
+	"github.com/metacubex/http/h2c"
 )
 
 const idleTimeout = 30 * time.Second
@@ -25,7 +23,7 @@ type ServerOption struct {
 }
 
 func NewServerHandler(options ServerOption) http.Handler {
-	path := "/" + options.ServiceName + "/Tun"
+	path := ServiceNameToPath(options.ServiceName)
 	connHandler := options.ConnHandler
 	httpHandler := options.HttpHandler
 	if httpHandler == nil {
@@ -43,21 +41,14 @@ func NewServerHandler(options ServerOption) http.Handler {
 			writer.WriteHeader(http.StatusOK)
 
 			conn := &Conn{
-				initFn: func() (io.ReadCloser, error) {
-					return request.Body, nil
+				initFn: func() (io.ReadCloser, NetAddr, error) {
+					nAddr := NetAddr{}
+					nAddr.SetAddrFromRequest(request)
+					return request.Body, nAddr, nil
 				},
-				writer:  writer,
-				flusher: writer.(http.Flusher),
+				writer: writer,
 			}
-			if request.RemoteAddr != "" {
-				metadata := C.Metadata{}
-				if err := metadata.SetRemoteAddress(request.RemoteAddr); err == nil {
-					conn.remoteAddr = net.TCPAddrFromAddrPort(metadata.AddrPort())
-				}
-			}
-			if addr, ok := request.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-				conn.localAddr = addr
-			}
+			_ = conn.Init()
 
 			wrapper := &h2ConnWrapper{
 				// gun.Conn can't correct handle ReadDeadline
@@ -71,7 +62,7 @@ func NewServerHandler(options ServerOption) http.Handler {
 		}
 
 		httpHandler.ServeHTTP(writer, request)
-	}), &http2.Server{
+	}), &http.Http2Server{
 		IdleTimeout: idleTimeout,
 	})
 }

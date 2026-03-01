@@ -9,14 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/callback"
 	"github.com/metacubex/mihomo/common/lru"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
-	"github.com/metacubex/mihomo/component/dialer"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/constant/provider"
+	P "github.com/metacubex/mihomo/constant/provider"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -88,9 +86,9 @@ func jumpHash(key uint64, buckets int32) int32 {
 }
 
 // DialContext implements C.ProxyAdapter
-func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (c C.Conn, err error) {
+func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata) (c C.Conn, err error) {
 	proxy := lb.Unwrap(metadata, true)
-	c, err = proxy.DialContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
+	c, err = proxy.DialContext(ctx, metadata)
 
 	if err == nil {
 		c.AppendToChains(lb)
@@ -112,7 +110,7 @@ func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, op
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (pc C.PacketConn, err error) {
+func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
 	defer func() {
 		if err == nil {
 			pc.AppendToChains(lb)
@@ -120,7 +118,7 @@ func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Meta
 	}()
 
 	proxy := lb.Unwrap(metadata, true)
-	return proxy.ListenPacketContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
+	return proxy.ListenPacketContext(ctx, metadata)
 }
 
 // SupportUDP implements C.ProxyAdapter
@@ -196,7 +194,7 @@ func strategyStickySessions(url string) strategyFn {
 		key := utils.MapHash(getKeyWithSrcAndDst(metadata))
 		length := len(proxies)
 		idx, has := lruCache.Get(key)
-		if !has {
+		if !has || idx >= length {
 			idx = int(jumpHash(key+uint64(time.Now().UnixNano()), int32(length)))
 		}
 
@@ -241,7 +239,19 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
+func (lb *LoadBalance) Providers() []P.ProxyProvider {
+	return lb.providers
+}
+
+func (lb *LoadBalance) Proxies() []C.Proxy {
+	return lb.GetProxies(false)
+}
+
+func (lb *LoadBalance) Now() string {
+	return ""
+}
+
+func NewLoadBalance(option *GroupCommonOption, providers []P.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
 	var strategyFn strategyFn
 	switch strategy {
 	case "consistent-hashing":
@@ -255,18 +265,14 @@ func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvide
 	}
 	return &LoadBalance{
 		GroupBase: NewGroupBase(GroupBaseOption{
-			outbound.BaseOption{
-				Name:        option.Name,
-				Type:        C.LoadBalance,
-				Interface:   option.Interface,
-				RoutingMark: option.RoutingMark,
-			},
-			option.Filter,
-			option.ExcludeFilter,
-			option.ExcludeType,
-			option.TestTimeout,
-			option.MaxFailedTimes,
-			providers,
+			Name:           option.Name,
+			Type:           C.LoadBalance,
+			Filter:         option.Filter,
+			ExcludeFilter:  option.ExcludeFilter,
+			ExcludeType:    option.ExcludeType,
+			TestTimeout:    option.TestTimeout,
+			MaxFailedTimes: option.MaxFailedTimes,
+			Providers:      providers,
 		}),
 		strategyFn:     strategyFn,
 		disableUDP:     option.DisableUDP,

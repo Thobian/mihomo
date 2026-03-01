@@ -12,8 +12,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/constant/provider"
-	types "github.com/metacubex/mihomo/constant/provider"
+	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 
@@ -26,7 +25,7 @@ type GroupBase struct {
 	filterRegs        []*regexp2.Regexp
 	excludeFilterRegs []*regexp2.Regexp
 	excludeTypeArray  []string
-	providers         []provider.ProxyProvider
+	providers         []P.ProxyProvider
 	failedTestMux     sync.Mutex
 	failedTimes       int
 	failedTime        time.Time
@@ -41,53 +40,47 @@ type GroupBase struct {
 }
 
 type GroupBaseOption struct {
-	outbound.BaseOption
-	filter         string
-	excludeFilter  string
-	excludeType    string
+	Name           string
+	Type           C.AdapterType
+	Filter         string
+	ExcludeFilter  string
+	ExcludeType    string
 	TestTimeout    int
-	maxFailedTimes int
-	providers      []provider.ProxyProvider
+	MaxFailedTimes int
+	Providers      []P.ProxyProvider
 }
 
 func NewGroupBase(opt GroupBaseOption) *GroupBase {
-	if opt.RoutingMark != 0 {
-		log.Warnln("The group [%s] with routing-mark configuration is deprecated, please set it directly on the proxy instead", opt.Name)
-	}
-	if opt.Interface != "" {
-		log.Warnln("The group [%s] with interface-name configuration is deprecated, please set it directly on the proxy instead", opt.Name)
-	}
-
 	var excludeTypeArray []string
-	if opt.excludeType != "" {
-		excludeTypeArray = strings.Split(opt.excludeType, "|")
+	if opt.ExcludeType != "" {
+		excludeTypeArray = strings.Split(opt.ExcludeType, "|")
 	}
 
 	var excludeFilterRegs []*regexp2.Regexp
-	if opt.excludeFilter != "" {
-		for _, excludeFilter := range strings.Split(opt.excludeFilter, "`") {
+	if opt.ExcludeFilter != "" {
+		for _, excludeFilter := range strings.Split(opt.ExcludeFilter, "`") {
 			excludeFilterReg := regexp2.MustCompile(excludeFilter, regexp2.None)
 			excludeFilterRegs = append(excludeFilterRegs, excludeFilterReg)
 		}
 	}
 
 	var filterRegs []*regexp2.Regexp
-	if opt.filter != "" {
-		for _, filter := range strings.Split(opt.filter, "`") {
+	if opt.Filter != "" {
+		for _, filter := range strings.Split(opt.Filter, "`") {
 			filterReg := regexp2.MustCompile(filter, regexp2.None)
 			filterRegs = append(filterRegs, filterReg)
 		}
 	}
 
 	gb := &GroupBase{
-		Base:              outbound.NewBase(opt.BaseOption),
+		Base:              outbound.NewBase(outbound.BaseOption{Name: opt.Name, Type: opt.Type}),
 		filterRegs:        filterRegs,
 		excludeFilterRegs: excludeFilterRegs,
 		excludeTypeArray:  excludeTypeArray,
-		providers:         opt.providers,
+		providers:         opt.Providers,
 		failedTesting:     atomic.NewBool(false),
 		TestTimeout:       opt.TestTimeout,
-		maxFailedTimes:    opt.maxFailedTimes,
+		maxFailedTimes:    opt.MaxFailedTimes,
 	}
 
 	if gb.TestTimeout == 0 {
@@ -131,7 +124,7 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 		}
 	} else {
 		for _, pd := range gb.providers {
-			if pd.VehicleType() == types.Compatible { // compatible provider unneeded filter
+			if pd.VehicleType() == P.Compatible { // compatible provider unneeded filter
 				proxies = append(proxies, pd.Proxies()...)
 				continue
 			}
@@ -279,7 +272,7 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func(
 
 			log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
 			if gb.failedTimes >= gb.maxFailedTimes {
-				log.Warnln("because %s failed multiple times, active health check", gb.Name())
+				log.Warnln("because %s failed multiple times, activate health check", gb.Name())
 				fn()
 			}
 		}

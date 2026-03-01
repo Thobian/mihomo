@@ -1,23 +1,25 @@
 package tuic
 
 import (
-	"crypto/tls"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	CN "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/sockopt"
+	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/ntp"
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/transport/tuic"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/metacubex/quic-go"
+	"github.com/metacubex/tls"
 	"golang.org/x/exp/slices"
 )
 
@@ -47,25 +49,57 @@ func New(config LC.TuicServer, tunnel C.Tunnel, additions ...inbound.Addition) (
 		return nil, err
 	}
 
-	cert, err := CN.ParseCert(config.Certificate, config.PrivateKey, C.Path)
+	tlsConfig := &tls.Config{
+		Time:       ntp.Now,
+		MinVersion: tls.VersionTLS13,
+	}
+	certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	tlsConfig := &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{cert},
+	tlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return certLoader()
+	}
+	tlsConfig.ClientAuth = ca.ClientAuthTypeFromString(config.ClientAuthType)
+	if len(config.ClientAuthCert) > 0 {
+		if tlsConfig.ClientAuth == tls.NoClientCert {
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+	}
+	if tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven || tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert {
+		pool, err := ca.LoadCertificates(config.ClientAuthCert)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig.ClientCAs = pool
+	}
+
+	if config.EchKey != "" {
+		err = ech.LoadECHKey(config.EchKey, tlsConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(config.ALPN) > 0 {
 		tlsConfig.NextProtos = config.ALPN
 	} else {
 		tlsConfig.NextProtos = []string{"h3"}
 	}
+
+	if config.MaxIdleTime == 0 {
+		config.MaxIdleTime = 15000
+	}
+	if config.AuthenticationTimeout == 0 {
+		config.AuthenticationTimeout = 1000
+	}
+
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:        time.Duration(config.MaxIdleTime) * time.Millisecond,
 		MaxIncomingStreams:    ServerMaxIncomingStreams,
 		MaxIncomingUniStreams: ServerMaxIncomingStreams,
 		EnableDatagrams:       true,
 		Allow0RTT:             true,
+		DisablePathManager:    true, // for port hopping
 	}
 	quicConfig.InitialStreamReceiveWindow = tuic.DefaultStreamReceiveWindow / 10
 	quicConfig.MaxStreamReceiveWindow = tuic.DefaultStreamReceiveWindow

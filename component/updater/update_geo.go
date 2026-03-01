@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
-	"github.com/metacubex/mihomo/common/batch"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/geodata"
 	_ "github.com/metacubex/mihomo/component/geodata/standard"
@@ -19,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/oschwald/maxminddb-golang"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -169,41 +169,25 @@ func UpdateGeoSite() (err error) {
 func updateGeoDatabases() error {
 	defer runtime.GC()
 
-	b, _ := batch.New[interface{}](context.Background())
+	b := errgroup.Group{}
 
 	if geodata.GeoIpEnable() {
 		if geodata.GeodataMode() {
-			b.Go("UpdateGeoIp", func() (_ interface{}, err error) {
-				err = UpdateGeoIp()
-				return
-			})
+			b.Go(UpdateGeoIp)
 		} else {
-			b.Go("UpdateMMDB", func() (_ interface{}, err error) {
-				err = UpdateMMDB()
-				return
-			})
+			b.Go(UpdateMMDB)
 		}
 	}
 
 	if geodata.ASNEnable() {
-		b.Go("UpdateASN", func() (_ interface{}, err error) {
-			err = UpdateASN()
-			return
-		})
+		b.Go(UpdateASN)
 	}
 
 	if geodata.GeoSiteEnable() {
-		b.Go("UpdateGeoSite", func() (_ interface{}, err error) {
-			err = UpdateGeoSite()
-			return
-		})
+		b.Go(UpdateGeoSite)
 	}
 
-	if e := b.Wait(); e != nil {
-		return e.Err
-	}
-
-	return nil
+	return b.Wait()
 }
 
 var ErrGetDatabaseUpdateSkip = errors.New("GEO database is updating, skip")
@@ -228,7 +212,7 @@ func UpdateGeoDatabases() error {
 	return nil
 }
 
-func getUpdateTime() (err error, time time.Time) {
+func getUpdateTime() (time time.Time, err error) {
 	filesToCheck := []string{
 		C.Path.GeoIP(),
 		C.Path.MMDB(),
@@ -240,7 +224,7 @@ func getUpdateTime() (err error, time time.Time) {
 		var fileInfo os.FileInfo
 		fileInfo, err = os.Stat(file)
 		if err == nil {
-			return nil, fileInfo.ModTime()
+			return fileInfo.ModTime(), nil
 		}
 	}
 
@@ -257,7 +241,7 @@ func RegisterGeoUpdater() {
 		ticker := time.NewTicker(time.Duration(updateInterval) * time.Hour)
 		defer ticker.Stop()
 
-		err, lastUpdate := getUpdateTime()
+		lastUpdate, err := getUpdateTime()
 		if err != nil {
 			log.Errorln("[GEO] Get GEO database update time error: %s", err.Error())
 			return

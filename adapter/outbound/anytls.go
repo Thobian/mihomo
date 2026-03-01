@@ -2,78 +2,68 @@ package outbound
 
 import (
 	"context"
-	"errors"
 	"net"
-	"runtime"
 	"strconv"
 	"time"
 
-	CN "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/mihomo/component/dialer"
+	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/proxydialer"
-	"github.com/metacubex/mihomo/component/resolver"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/anytls"
 	"github.com/metacubex/mihomo/transport/vmess"
 
-	M "github.com/sagernet/sing/common/metadata"
-	"github.com/sagernet/sing/common/uot"
+	M "github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/sing/common/uot"
 )
 
 type AnyTLS struct {
 	*Base
 	client *anytls.Client
-	dialer proxydialer.SingDialer
 	option *AnyTLSOption
 }
 
 type AnyTLSOption struct {
 	BasicOption
-	Name                     string   `proxy:"name"`
-	Server                   string   `proxy:"server"`
-	Port                     int      `proxy:"port"`
-	Password                 string   `proxy:"password"`
-	ALPN                     []string `proxy:"alpn,omitempty"`
-	SNI                      string   `proxy:"sni,omitempty"`
-	ClientFingerprint        string   `proxy:"client-fingerprint,omitempty"`
-	SkipCertVerify           bool     `proxy:"skip-cert-verify,omitempty"`
-	Fingerprint              string   `proxy:"fingerprint,omitempty"`
-	UDP                      bool     `proxy:"udp,omitempty"`
-	IdleSessionCheckInterval int      `proxy:"idle-session-check-interval,omitempty"`
-	IdleSessionTimeout       int      `proxy:"idle-session-timeout,omitempty"`
-	MinIdleSession           int      `proxy:"min-idle-session,omitempty"`
+	Name                     string     `proxy:"name"`
+	Server                   string     `proxy:"server"`
+	Port                     int        `proxy:"port"`
+	Password                 string     `proxy:"password"`
+	ALPN                     []string   `proxy:"alpn,omitempty"`
+	SNI                      string     `proxy:"sni,omitempty"`
+	ECHOpts                  ECHOptions `proxy:"ech-opts,omitempty"`
+	ClientFingerprint        string     `proxy:"client-fingerprint,omitempty"`
+	SkipCertVerify           bool       `proxy:"skip-cert-verify,omitempty"`
+	Fingerprint              string     `proxy:"fingerprint,omitempty"`
+	Certificate              string     `proxy:"certificate,omitempty"`
+	PrivateKey               string     `proxy:"private-key,omitempty"`
+	UDP                      bool       `proxy:"udp,omitempty"`
+	IdleSessionCheckInterval int        `proxy:"idle-session-check-interval,omitempty"`
+	IdleSessionTimeout       int        `proxy:"idle-session-timeout,omitempty"`
+	MinIdleSession           int        `proxy:"min-idle-session,omitempty"`
 }
 
-func (t *AnyTLS) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.Conn, err error) {
-	options := t.Base.DialOptions(opts...)
-	t.dialer.SetDialer(dialer.NewDialer(options...))
+func (t *AnyTLS) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
 	c, err := t.client.CreateProxy(ctx, M.ParseSocksaddrHostPort(metadata.String(), metadata.DstPort))
 	if err != nil {
 		return nil, err
 	}
-	return NewConn(CN.NewRefConn(c, t), t), nil
+	return NewConn(c, t), nil
 }
 
-func (t *AnyTLS) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.PacketConn, err error) {
+func (t *AnyTLS) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
+	if err = t.ResolveUDP(ctx, metadata); err != nil {
+		return nil, err
+	}
+
 	// create tcp
-	options := t.Base.DialOptions(opts...)
-	t.dialer.SetDialer(dialer.NewDialer(options...))
 	c, err := t.client.CreateProxy(ctx, uot.RequestDestination(2))
 	if err != nil {
 		return nil, err
 	}
 
 	// create uot on tcp
-	if !metadata.Resolved() {
-		ip, err := resolver.ResolveIP(ctx, metadata.Host)
-		if err != nil {
-			return nil, errors.New("can't resolve ip")
-		}
-		metadata.DstIP = ip
-	}
 	destination := M.SocksaddrFromNet(metadata.UDPAddr())
-	return newPacketConn(CN.NewRefPacketConn(CN.NewThreadSafePacketConn(uot.NewLazyConn(c, uot.Request{Destination: destination})), t), t), nil
+	return newPacketConn(N.NewThreadSafePacketConn(uot.NewLazyConn(c, uot.Request{Destination: destination})), t), nil
 }
 
 // SupportUOT implements C.ProxyAdapter
@@ -88,10 +78,30 @@ func (t *AnyTLS) ProxyInfo() C.ProxyInfo {
 	return info
 }
 
+// Close implements C.ProxyAdapter
+func (t *AnyTLS) Close() error {
+	return t.client.Close()
+}
+
 func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 	addr := net.JoinHostPort(option.Server, strconv.Itoa(option.Port))
-
-	singDialer := proxydialer.NewByNameSingDialer(option.DialerProxy, dialer.NewDialer())
+	outbound := &AnyTLS{
+		Base: &Base{
+			name:   option.Name,
+			addr:   addr,
+			tp:     C.AnyTLS,
+			pdName: option.ProviderName,
+			udp:    option.UDP,
+			tfo:    option.TFO,
+			mpTcp:  option.MPTCP,
+			iface:  option.Interface,
+			rmark:  option.RoutingMark,
+			prefer: option.IPVersion,
+		},
+		option: &option,
+	}
+	outbound.dialer = option.NewDialer(outbound.DialOptions())
+	singDialer := proxydialer.NewSingDialer(outbound.dialer)
 
 	tOption := anytls.ClientConfig{
 		Password:                 option.Password,
@@ -101,40 +111,27 @@ func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 		IdleSessionTimeout:       time.Duration(option.IdleSessionTimeout) * time.Second,
 		MinIdleSession:           option.MinIdleSession,
 	}
+	echConfig, err := option.ECHOpts.Parse()
+	if err != nil {
+		return nil, err
+	}
 	tlsConfig := &vmess.TLSConfig{
 		Host:              option.SNI,
 		SkipCertVerify:    option.SkipCertVerify,
 		NextProtos:        option.ALPN,
 		FingerPrint:       option.Fingerprint,
+		Certificate:       option.Certificate,
+		PrivateKey:        option.PrivateKey,
 		ClientFingerprint: option.ClientFingerprint,
+		ECH:               echConfig,
 	}
 	if tlsConfig.Host == "" {
 		tlsConfig.Host = option.Server
 	}
-	if tlsC.HaveGlobalFingerprint() && len(option.ClientFingerprint) == 0 {
-		tlsConfig.ClientFingerprint = tlsC.GetGlobalFingerprint()
-	}
 	tOption.TLSConfig = tlsConfig
 
-	outbound := &AnyTLS{
-		Base: &Base{
-			name:   option.Name,
-			addr:   addr,
-			tp:     C.AnyTLS,
-			udp:    option.UDP,
-			tfo:    option.TFO,
-			mpTcp:  option.MPTCP,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: C.NewDNSPrefer(option.IPVersion),
-		},
-		client: anytls.NewClient(context.TODO(), tOption),
-		option: &option,
-		dialer: singDialer,
-	}
-	runtime.SetFinalizer(outbound, func(o *AnyTLS) {
-		_ = o.client.Close()
-	})
+	client := anytls.NewClient(context.TODO(), tOption)
+	outbound.client = client
 
 	return outbound, nil
 }

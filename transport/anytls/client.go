@@ -5,17 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"net"
+	"sync/atomic"
 	"time"
 
-	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/buf"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/anytls/padding"
 	"github.com/metacubex/mihomo/transport/anytls/session"
 	"github.com/metacubex/mihomo/transport/vmess"
 
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
+	M "github.com/metacubex/sing/common/metadata"
+	N "github.com/metacubex/sing/common/network"
 )
 
 type ClientConfig struct {
@@ -34,7 +33,7 @@ type Client struct {
 	dialer         N.Dialer
 	server         M.Socksaddr
 	sessionClient  *session.Client
-	padding        atomic.TypedValue[*padding.PaddingFactory]
+	padding        atomic.Pointer[padding.PaddingFactory]
 }
 
 func NewClient(ctx context.Context, config ClientConfig) *Client {
@@ -47,7 +46,7 @@ func NewClient(ctx context.Context, config ClientConfig) *Client {
 	}
 	// Initialize the padding state of this client
 	padding.UpdatePaddingScheme(padding.DefaultPaddingScheme, &c.padding)
-	c.sessionClient = session.NewClient(ctx, c.CreateOutboundTLSConnection, &c.padding, config.IdleSessionCheckInterval, config.IdleSessionTimeout, config.MinIdleSession)
+	c.sessionClient = session.NewClient(ctx, c.createOutboundTLSConnection, &c.padding, config.IdleSessionCheckInterval, config.IdleSessionTimeout, config.MinIdleSession)
 	return c
 }
 
@@ -64,7 +63,7 @@ func (c *Client) CreateProxy(ctx context.Context, destination M.Socksaddr) (net.
 	return conn, nil
 }
 
-func (c *Client) CreateOutboundTLSConnection(ctx context.Context) (net.Conn, error) {
+func (c *Client) createOutboundTLSConnection(ctx context.Context) (net.Conn, error) {
 	conn, err := c.dialer.DialContext(ctx, N.NetworkTCP, c.server)
 	if err != nil {
 		return nil, err
@@ -83,12 +82,7 @@ func (c *Client) CreateOutboundTLSConnection(ctx context.Context) (net.Conn, err
 		b.WriteZeroN(paddingLen)
 	}
 
-	getTlsConn := func() (net.Conn, error) {
-		ctx, cancel := context.WithTimeout(ctx, C.DefaultTLSTimeout)
-		defer cancel()
-		return vmess.StreamTLSConn(ctx, conn, c.tlsConfig)
-	}
-	tlsConn, err := getTlsConn()
+	tlsConn, err := vmess.StreamTLSConn(ctx, conn, c.tlsConfig)
 	if err != nil {
 		conn.Close()
 		return nil, err

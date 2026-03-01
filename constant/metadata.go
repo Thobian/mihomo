@@ -6,11 +6,15 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-
-	"github.com/metacubex/mihomo/transport/socks5"
 )
 
-// Socks addr type
+// SOCKS address types as defined in RFC 1928 section 5.
+const (
+	AtypIPv4       AddrType = 1
+	AtypDomainName AddrType = 3
+	AtypIPv6       AddrType = 4
+)
+
 const (
 	TCP NetWork = iota
 	UDP
@@ -34,8 +38,26 @@ const (
 	TUIC
 	HYSTERIA2
 	ANYTLS
+	MIERU
+	SUDOKU
+	TRUSTTUNNEL
 	INNER
 )
+
+type AddrType byte
+
+func (a AddrType) String() string {
+	switch a {
+	case AtypIPv4:
+		return "IPv4"
+	case AtypDomainName:
+		return "DomainName"
+	case AtypIPv6:
+		return "IPv6"
+	default:
+		return "Unknown"
+	}
+}
 
 type NetWork int
 
@@ -90,6 +112,12 @@ func (t Type) String() string {
 		return "Hysteria2"
 	case ANYTLS:
 		return "AnyTLS"
+	case MIERU:
+		return "Mieru"
+	case SUDOKU:
+		return "Sudoku"
+	case TRUSTTUNNEL:
+		return "TrustTunnel"
 	case INNER:
 		return "Inner"
 	default:
@@ -130,6 +158,12 @@ func ParseType(t string) (*Type, error) {
 		res = HYSTERIA2
 	case "ANYTLS":
 		res = ANYTLS
+	case "MIERU":
+		res = MIERU
+	case "SUDOKU":
+		res = SUDOKU
+	case "TRUSTTUNNEL":
+		res = TRUSTTUNNEL
 	case "INNER":
 		res = INNER
 	default:
@@ -207,14 +241,14 @@ func (m *Metadata) SourceValid() bool {
 	return m.SrcPort != 0 && m.SrcIP.IsValid()
 }
 
-func (m *Metadata) AddrType() int {
+func (m *Metadata) AddrType() AddrType {
 	switch true {
 	case m.Host != "" || !m.DstIP.IsValid():
-		return socks5.AtypDomainName
+		return AtypDomainName
 	case m.DstIP.Is4():
-		return socks5.AtypIPv4
+		return AtypIPv4
 	default:
-		return socks5.AtypIPv6
+		return AtypIPv6
 	}
 }
 
@@ -240,6 +274,11 @@ func (m *Metadata) Pure() *Metadata {
 	}
 
 	return m
+}
+
+func (m *Metadata) Clone() *Metadata {
+	copyM := *m
+	return &copyM
 }
 
 func (m *Metadata) AddrPort() netip.AddrPort {
